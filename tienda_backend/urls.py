@@ -23,6 +23,7 @@ from rest_framework_simplejwt.views import (
     TokenObtainPairView,
     TokenRefreshView,
 )
+from core.serializers import CustomTokenObtainPairSerializer
 
 # Esquema de la API
 schema_view = get_schema_view(
@@ -37,7 +38,11 @@ schema_view = get_schema_view(
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('api/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
+    path(
+        'api/token/',
+        TokenObtainPairView.as_view(serializer_class=CustomTokenObtainPairSerializer),
+        name='token_obtain_pair'
+    ),
     path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('api/', include('core.urls')),  # Incluye las URLs de la app 'core'
     path('api-auth/', include('rest_framework.urls')),  # Para autenticación con sesiones

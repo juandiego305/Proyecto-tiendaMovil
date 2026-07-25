@@ -7,9 +7,19 @@ from django.utils import timezone
 
 #  Usuario del sistema (Administrador o Vendedor)
 class Usuario(AbstractUser):
+    class Rol(models.TextChoices):
+        ADMINISTRADOR = 'administrador', 'Administrador'
+        VENDEDOR = 'vendedor', 'Vendedor'
+
     telefono = models.CharField(max_length=15, blank=True, null=True)
+    rol = models.CharField(max_length=20, choices=Rol.choices, default=Rol.VENDEDOR)
     groups = models.ManyToManyField(Group, related_name="usuarios", blank=True)
     user_permissions = models.ManyToManyField(Permission, related_name="usuarios", blank=True)
+
+    def save(self, *args, **kwargs):
+        if self.is_superuser or self.is_staff:
+            self.rol = self.Rol.ADMINISTRADOR
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.username

@@ -11,6 +11,7 @@ from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
 from django.contrib.auth.hashers import make_password
 from django.utils.crypto import get_random_string
+from django.utils.timezone import now
 import random
 from .serializers import (
     CajaSerializer, UsuarioSerializer, TiendaSerializer, EmpleadoSerializer, ProductoSerializer, VentaSerializer,
@@ -20,6 +21,13 @@ from core import serializers
 
 # Obtener el modelo de usuario
 Usuario = get_user_model()
+
+
+class MeView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response(UsuarioSerializer(request.user).data)
 
 # Vista para Usuarios
 class UsuarioViewSet(viewsets.ModelViewSet):
@@ -32,7 +40,12 @@ class UsuarioViewSet(viewsets.ModelViewSet):
         password_temporal = get_random_string(length=8)  # Ej: 'A2k9Lm3p'
         
         # Guardar el usuario con contraseña encriptada
-        usuario = serializer.save(password=make_password(password_temporal))
+        usuario = serializer.save(
+            password=make_password(password_temporal),
+            rol=Usuario.Rol.VENDEDOR,
+            is_staff=False,
+            is_superuser=False,
+        )
 
         # Guardar la contraseña temporal en el objeto para retornarla en la respuesta
         self.password_temporal = password_temporal
@@ -112,9 +125,9 @@ class TiendaViewSet(viewsets.ModelViewSet):
         request_body=openapi.Schema(
             type=openapi.TYPE_OBJECT,
             properties={
-                "usuario_id": openapi.Schema(type=openapi.TYPE_INTEGER, description="ID del usuario a agregar")
+                "email": openapi.Schema(type=openapi.TYPE_STRING, description="Correo del usuario ya registrado")
             },
-            required=["usuario_id"]
+            required=["email"]
         ),
         responses={
             200: "Empleado agregado correctamente.",
@@ -124,29 +137,33 @@ class TiendaViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def agregar_empleado(self, request, pk=None):
-        """Crea un nuevo usuario como empleado en la tienda activa."""
+        """Asocia un usuario existente como empleado de la tienda activa."""
         tienda = self.get_object()
-        nombre = request.data.get('nombre')
-        password_temporal = 'test'
-    
+        email = (request.data.get('email') or '').strip()
 
-        if not nombre:
-            return Response({"error": "El nombre del empleado es obligatorio."}, status=400)
+        if not email:
+            return Response({"error": "Debe proporcionar email."}, status=400)
 
-        # Crear el usuario con la contraseña temporal
-        usuario = Usuario.objects.create(
-            username=nombre,
-            password=make_password(password_temporal)  # Asegura que la contraseña se almacene encriptada
-        )
-    
+        usuarios = Usuario.objects.filter(email__iexact=email)
+        if not usuarios.exists():
+            return Response({"error": "El usuario no existe."}, status=400)
 
-        # Asociar el usuario como empleado de la tienda
+        if usuarios.count() > 1:
+            return Response(
+                {"error": "Hay múltiples usuarios con ese correo. Use un correo único."},
+                status=400,
+            )
+
+        usuario = usuarios.first()
+
+        if Empleado.objects.filter(usuario=usuario).exists():
+            return Response({"error": "El usuario ya está asignado como empleado."}, status=400)
+
         Empleado.objects.create(usuario=usuario, tienda=tienda)
 
         return Response({
             "mensaje": f"Empleado {usuario.username} agregado a {tienda.nombre}.",
             "empleado_id": usuario.id,
-            "password_temporal": usuario.password
         })
 
     
@@ -215,13 +232,6 @@ class ProductoViewSet(viewsets.ModelViewSet):
         if not tienda_id:
             return Producto.objects.none()
         return Producto.objects.filter(tienda_id=tienda_id)
-
-    def perform_create(self, serializer):
-        tienda_id = self.request.data.get("tienda_id")
-        if not tienda_id:
-            raise serializers.ValidationError("Debe proporcionar el ID de la tienda.")
-        tienda = get_object_or_404(Tienda, id=tienda_id)
-        serializer.save(tienda=tienda)
 
     def destroy(self, request, *args, **kwargs):
         tienda_id = self.request.query_params.get("tienda_id")
