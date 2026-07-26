@@ -30,6 +30,9 @@ ALLOWED_HOSTS = ['proyecto-tiendamovil.onrender.com', 'localhost', '127.0.0.1']
 CSRF_TRUSTED_ORIGINS = env.list('CSRF_TRUSTED_ORIGINS', default=['http://localhost:3000'])
 
 CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=['http://localhost:3000', 'http://127.0.0.1:3000'])
+# 2. AGREGAR ESTO: Permite cualquier dominio dinámico que termine en .vercel.app
+CORS_ALLOWED_ORIGIN_REGEXES = [r"^https://.*\.vercel\.app$", ]
+
 
 CORS_ALLOW_CREDENTIALS = env.bool('CORS_ALLOW_CREDENTIALS', default=True)
 SESSION_COOKIE_HTTPONLY = True
