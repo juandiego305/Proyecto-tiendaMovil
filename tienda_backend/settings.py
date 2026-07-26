@@ -22,7 +22,7 @@ environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
 SECRET_KEY = env('SECRET_KEY')
 DEBUG = env.bool('DEBUG', default=False)
 
-ALLOWED_HOSTS = ['127.0.0.1', 'localhost']
+ALLOWED_HOSTS = ['proyecto-tiendamovil.onrender.com', 'localhost', '127.0.0.1']
 
 # --- CONFIGURACIÓN DE CORS Y CSRF ---
 CSRF_TRUSTED_ORIGINS = [
@@ -69,29 +69,34 @@ INSTALLED_APPS = [
 SITE_ID = 2
 
 # --- BASE DE DATOS ---
-# Usa SQLite localmente para desarrollo
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    }
-}
+# Selección de motor de base de datos basada en la variable de entorno USE_NEON.
+# Por seguridad, las credenciales siguen en el archivo .env. Si USE_NEON es True,
+# se intentará conectar a PostgreSQL (Neon) usando las variables DATABASE_*
+USE_NEON = env.bool('USE_NEON', default=True)
 
-# Descomenta esto cuando Neon esté configurado correctamente
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.postgresql',
-#         'NAME': env('DATABASE_NAME'),
-#         'USER': env('DATABASE_USER'),
-#         'PASSWORD': env('DATABASE_PASS'),
-#         'HOST': env('DATABASE_HOST'),
-#         'PORT': env('DATABASE_PORT', default='5432'),
-#         'OPTIONS': {
-#             'sslmode': 'require',
-#             'channel_binding': 'require',
-#         },
-#     }
-# }
+if USE_NEON:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': env('DATABASE_NAME'),
+            'USER': env('DATABASE_USER'),
+            'PASSWORD': env('DATABASE_PASS'),
+            'HOST': env('DATABASE_HOST'),
+            'PORT': env('DATABASE_PORT', default='5432'),
+            'OPTIONS': {
+                'sslmode': env('DATABASE_SSLMODE', default='require'),
+                'channel_binding': env('DATABASE_CHANNEL_BINDING', default='require'),
+            },
+        }
+    }
+else:
+    # Fallback a SQLite para desarrollo local
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
+    }
 
 # --- REST FRAMEWORK CONFIG ---
 REST_FRAMEWORK = {
