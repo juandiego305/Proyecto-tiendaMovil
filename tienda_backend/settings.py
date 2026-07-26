@@ -25,16 +25,13 @@ DEBUG = env.bool('DEBUG', default=False)
 ALLOWED_HOSTS = ['proyecto-tiendamovil.onrender.com', 'localhost', '127.0.0.1']
 
 # --- CONFIGURACIÓN DE CORS Y CSRF ---
-CSRF_TRUSTED_ORIGINS = [
-    "http://localhost:3000",
-]
+# Se pueden pasar como variables de entorno (coma-separadas) en Render.
+# Ejemplo en Render: CORS_ALLOWED_ORIGINS=https://mi-frontend.onrender.com,https://otro
+CSRF_TRUSTED_ORIGINS = env.list('CSRF_TRUSTED_ORIGINS', default=['http://localhost:3000'])
 
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-]
+CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=['http://localhost:3000', 'http://127.0.0.1:3000'])
 
-CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_CREDENTIALS = env.bool('CORS_ALLOW_CREDENTIALS', default=True)
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = "None"
 SESSION_COOKIE_SECURE = True
