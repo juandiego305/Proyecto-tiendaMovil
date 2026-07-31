@@ -1,8 +1,10 @@
 from django.db import models
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
-from rest_framework import viewsets, permissions, status
+from rest_framework import viewsets, permissions, status, serializers
 from django.contrib.auth import get_user_model
+from django.db import transaction
+from decimal import Decimal
 from .models import Caja, Tienda, Empleado, Producto, Venta, DetalleVenta, Gasto
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -17,10 +19,26 @@ from .serializers import (
     CajaSerializer, UsuarioSerializer, TiendaSerializer, EmpleadoSerializer, ProductoSerializer, VentaSerializer,
     DetalleVentaSerializer, GastoSerializer
 )
-from core import serializers
 
 # Obtener el modelo de usuario
 Usuario = get_user_model()
+
+
+def _resolve_tienda_id(request):
+    return (
+        request.data.get("tienda_id")
+        or request.data.get("tienda")
+        or request.query_params.get("tienda_id")
+        or request.session.get("tienda_id")
+    )
+
+
+def _usuario_tiene_acceso_tienda(usuario, tienda):
+    if usuario.is_superuser or usuario.is_staff:
+        return True
+    if tienda.propietario_id == usuario.id:
+        return True
+    return Empleado.objects.filter(usuario=usuario, tienda=tienda).exists()
 
 
 class MeView(APIView):
@@ -121,13 +139,41 @@ class TiendaViewSet(viewsets.ModelViewSet):
         return Response({"empleados": empleados_data})
 
     @swagger_auto_schema(
+        operation_description="Lista todos los vendedores registrados y su estado de asignación a la tienda.",
+        responses={200: openapi.Schema(type=openapi.TYPE_ARRAY, items=openapi.Schema(type=openapi.TYPE_OBJECT))},
+    )
+    @action(detail=True, methods=['get'], url_path='vendedores')
+    def vendedores(self, request, pk=None):
+        tienda = self.get_object()
+        vendedores = Usuario.objects.filter(rol=Usuario.Rol.VENDEDOR).order_by('username')
+        empleados = Empleado.objects.filter(usuario__in=vendedores).select_related('usuario', 'tienda')
+        empleados_por_usuario = {empleado.usuario_id: empleado for empleado in empleados}
+
+        vendedores_data = []
+        for vendedor in vendedores:
+            empleado = empleados_por_usuario.get(vendedor.id)
+            vendedores_data.append({
+                "id": vendedor.id,
+                "username": vendedor.username,
+                "email": vendedor.email,
+                "telefono": vendedor.telefono,
+                "asignado": empleado is not None,
+                "tienda_id": empleado.tienda_id if empleado else None,
+                "tienda_nombre": empleado.tienda.nombre if empleado else None,
+                "puede_asignar": empleado is None,
+            })
+
+        return Response({"tienda": {"id": tienda.id, "nombre": tienda.nombre}, "vendedores": vendedores_data})
+
+    @swagger_auto_schema(
         operation_description="Agrega un empleado a una tienda.",
         request_body=openapi.Schema(
             type=openapi.TYPE_OBJECT,
             properties={
-                "email": openapi.Schema(type=openapi.TYPE_STRING, description="Correo del usuario ya registrado")
+                "usuario_id": openapi.Schema(type=openapi.TYPE_INTEGER, description="ID del vendedor registrado"),
+                "email": openapi.Schema(type=openapi.TYPE_STRING, description="Correo del vendedor registrado, opcional")
             },
-            required=["email"]
+            required=["usuario_id"]
         ),
         responses={
             200: "Empleado agregado correctamente.",
@@ -139,31 +185,39 @@ class TiendaViewSet(viewsets.ModelViewSet):
     def agregar_empleado(self, request, pk=None):
         """Asocia un usuario existente como empleado de la tienda activa."""
         tienda = self.get_object()
+        usuario_id = request.data.get('usuario_id')
         email = (request.data.get('email') or '').strip()
 
-        if not email:
-            return Response({"error": "Debe proporcionar email."}, status=400)
+        usuario = None
+        if usuario_id:
+            usuario = Usuario.objects.filter(id=usuario_id).first()
+        elif email:
+            usuarios = Usuario.objects.filter(email__iexact=email)
+            if usuarios.count() == 1:
+                usuario = usuarios.first()
+            elif usuarios.count() > 1:
+                return Response(
+                    {"error": "Hay múltiples usuarios con ese correo. Use un ID de usuario."},
+                    status=400,
+                )
 
-        usuarios = Usuario.objects.filter(email__iexact=email)
-        if not usuarios.exists():
-            return Response({"error": "El usuario no existe."}, status=400)
+        if usuario is None:
+            return Response({"error": "Debe proporcionar usuario_id o email de un vendedor registrado."}, status=400)
 
-        if usuarios.count() > 1:
-            return Response(
-                {"error": "Hay múltiples usuarios con ese correo. Use un correo único."},
-                status=400,
-            )
+        if usuario.rol != Usuario.Rol.VENDEDOR:
+            return Response({"error": "Solo se pueden asignar usuarios con rol vendedor."}, status=400)
 
-        usuario = usuarios.first()
-
-        if Empleado.objects.filter(usuario=usuario).exists():
-            return Response({"error": "El usuario ya está asignado como empleado."}, status=400)
+        empleado_existente = Empleado.objects.filter(usuario=usuario).select_related('tienda').first()
+        if empleado_existente:
+            if empleado_existente.tienda_id == tienda.id:
+                return Response({"error": "El usuario ya está asignado a esta tienda."}, status=400)
+            return Response({"error": f"El usuario ya está asignado a la tienda {empleado_existente.tienda.nombre}."}, status=400)
 
         Empleado.objects.create(usuario=usuario, tienda=tienda)
 
         return Response({
             "mensaje": f"Empleado {usuario.username} agregado a {tienda.nombre}.",
-            "empleado_id": usuario.id,
+            "usuario_id": usuario.id,
         })
 
     
@@ -236,7 +290,7 @@ class ProductoViewSet(viewsets.ModelViewSet):
     def destroy(self, request, *args, **kwargs):
         tienda_id = self.request.query_params.get("tienda_id")
         producto = get_object_or_404(Producto, id=kwargs["pk"], tienda_id=tienda_id)
-        if producto.ventas.exists():
+        if DetalleVenta.objects.filter(producto=producto).exists():
             return Response({"error": "No se puede eliminar un producto con ventas asociadas."}, status=400)
         return super().destroy(request, *args, **kwargs)
 
@@ -279,21 +333,55 @@ class VentaViewSet(viewsets.ModelViewSet):
 
     def create(self, request, *args, **kwargs):
         usuario = request.user
-        tienda_id = request.data.get("tienda")
+        tienda_id = _resolve_tienda_id(request)
         productos = request.data.get("productos")  # [{producto, cantidad}]
 
-        # Verifica caja abierta
-        caja = Caja.objects.filter(tienda_id=tienda_id, usuario=usuario, estado='abierta').first()
+        if not tienda_id:
+            return Response({"error": "Debe proporcionar la tienda o seleccionar una tienda activa."}, status=status.HTTP_400_BAD_REQUEST)
+
+        tienda = get_object_or_404(Tienda, id=tienda_id)
+        if not _usuario_tiene_acceso_tienda(usuario, tienda):
+            return Response({"error": "No tiene permiso para registrar ventas en esta tienda."}, status=status.HTTP_403_FORBIDDEN)
+
+        if not isinstance(productos, list) or not productos:
+            return Response({"error": "Debe enviar una lista de productos válida."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Verifica caja abierta para la tienda activa
+        caja = Caja.objects.filter(tienda=tienda, estado='abierta').first()
         if not caja:
             return Response({"error": "No hay caja abierta para esta tienda."}, status=status.HTTP_400_BAD_REQUEST)
 
         detalles = []
-        total = 0
+        total = Decimal("0.00")
 
-        for item in productos:
-            try:
-                producto = Producto.objects.get(pk=item["producto"])
-                cantidad = int(item["cantidad"])
+        with transaction.atomic():
+            productos_ids = [item.get("producto") for item in productos]
+            productos_por_id = {
+                producto.id: producto
+                for producto in Producto.objects.select_for_update().filter(id__in=productos_ids, tienda=tienda)
+            }
+
+            if len(productos_por_id) != len(set(productos_ids)):
+                faltantes = sorted({str(producto_id) for producto_id in productos_ids if producto_id not in productos_por_id})
+                return Response(
+                    {"error": f"Hay productos inválidos o que no pertenecen a esta tienda: {', '.join(faltantes)}."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            for item in productos:
+                producto_id = item.get("producto")
+                if producto_id is None:
+                    return Response({"error": "Cada producto debe incluir el ID del producto."}, status=status.HTTP_400_BAD_REQUEST)
+
+                producto = productos_por_id[producto_id]
+                try:
+                    cantidad = int(item.get("cantidad", 0))
+                except (TypeError, ValueError):
+                    return Response({"error": f"Cantidad inválida para {producto.nombre}."}, status=status.HTTP_400_BAD_REQUEST)
+
+                if cantidad <= 0:
+                    return Response({"error": f"La cantidad de {producto.nombre} debe ser mayor que cero."}, status=status.HTTP_400_BAD_REQUEST)
+
                 if producto.cantidad < cantidad:
                     return Response(
                         {"error": f"Stock insuficiente para {producto.nombre}"},
@@ -309,22 +397,20 @@ class VentaViewSet(viewsets.ModelViewSet):
                     "subtotal": subtotal,
                 })
 
-                producto.cantidad -= cantidad
-                producto.save()
+            venta = Venta.objects.create(tienda=tienda, caja=caja, usuario=usuario, total=total)
 
-            except Producto.DoesNotExist:
-                return Response({"error": f"Producto con ID {item['producto']} no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+            for detalle in detalles:
+                producto = detalle["producto"]
+                producto.cantidad -= detalle["cantidad"]
+                producto.save(update_fields=["cantidad"])
 
-        venta = Venta.objects.create(tienda_id=tienda_id, caja=caja, usuario=usuario, total=total)
-
-        for d in detalles:
-            DetalleVenta.objects.create(
-                venta=venta,
-                producto=d["producto"],
-                cantidad=d["cantidad"],
-                precio_unitario=d["precio_unitario"],
-                subtotal=d["subtotal"]
-            )
+                DetalleVenta.objects.create(
+                    venta=venta,
+                    producto=producto,
+                    cantidad=detalle["cantidad"],
+                    precio_unitario=detalle["precio_unitario"],
+                    subtotal=detalle["subtotal"]
+                )
 
         return Response(VentaSerializer(venta).data, status=status.HTTP_201_CREATED)
 
@@ -353,10 +439,12 @@ class GastoViewSet(viewsets.ModelViewSet):
         return Gasto.objects.filter(tienda_id=tienda_id)
 
     def perform_create(self, serializer):
-        tienda_id = self.request.data.get("tienda_id")
+        tienda_id = _resolve_tienda_id(self.request)
         if not tienda_id:
             raise serializers.ValidationError("Debe proporcionar el ID de la tienda.")
         tienda = get_object_or_404(Tienda, id=tienda_id)
+        if not _usuario_tiene_acceso_tienda(self.request.user, tienda):
+            raise serializers.ValidationError("No tiene permiso para registrar gastos en esta tienda.")
         caja = Caja.objects.filter(tienda=tienda, estado="abierta").first()
         if not caja:
             raise serializers.ValidationError("No hay una caja abierta en la tienda.")
@@ -382,10 +470,12 @@ class CajaViewSet(viewsets.ModelViewSet):
         return Caja.objects.filter(tienda_id=tienda_id)
 
     def perform_create(self, serializer):
-        tienda_id = self.request.data.get("tienda_id")
+        tienda_id = _resolve_tienda_id(self.request)
         if not tienda_id:
             raise serializers.ValidationError("Debe proporcionar el ID de la tienda.")
         tienda = get_object_or_404(Tienda, id=tienda_id)
+        if not _usuario_tiene_acceso_tienda(self.request.user, tienda):
+            raise serializers.ValidationError("No tiene permiso para abrir caja en esta tienda.")
         if Caja.objects.filter(tienda=tienda, estado='abierta').exists():
             raise serializers.ValidationError("Ya hay una caja abierta para esta tienda.")
         serializer.save(usuario=self.request.user, tienda=tienda)

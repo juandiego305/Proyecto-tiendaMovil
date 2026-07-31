@@ -94,12 +94,9 @@ class TiendaSerializer(serializers.ModelSerializer):
     
     
     def update(self, instance, validated_data):
-        empleados = validated_data.pop('empleados', None)  # Se maneja aparte para evitar errores
         instance.nombre = validated_data.get('nombre', instance.nombre)
         instance.direccion = validated_data.get('direccion', instance.direccion)
-        
-        if empleados is not None:
-            instance.empleados.set(empleados)  # Actualiza empleados
+        instance.telefono = validated_data.get('telefono', instance.telefono)
 
         instance.save()
         return instance
@@ -159,7 +156,7 @@ class DetalleVentaSerializer(serializers.ModelSerializer):
 # Serializador para Venta
 class VentaSerializer(serializers.ModelSerializer):
     detalles = DetalleVentaSerializer(many=True, read_only=True)
-    vendedor = UsuarioSerializer(read_only=True)
+    vendedor = UsuarioSerializer(source='usuario', read_only=True)
 
     class Meta:
         model = Venta
@@ -171,10 +168,22 @@ class GastoSerializer(serializers.ModelSerializer):
     Serializador para gestionar gastos.
     """
 
+    tienda_id = serializers.IntegerField(write_only=True, required=False)
+
     class Meta:
         model = Gasto
-        fields = ["id", "tienda", "caja", "usuario", "fecha", "descripcion", "monto", "categoria"]
+        fields = ["id", "tienda", "tienda_id", "caja", "usuario", "fecha", "descripcion", "monto", "categoria"]
         read_only_fields = ["id", "fecha", "usuario", "caja", "tienda"]  # La tienda se asignará automáticamente
+
+    def _resolve_tienda_id(self):
+        request = self.context.get("request")
+        if not request:
+            return None
+        return (
+            request.data.get("tienda_id")
+            or request.data.get("tienda")
+            or request.session.get("tienda_id")
+        )
 
     def validate(self, data):
         """
@@ -184,7 +193,7 @@ class GastoSerializer(serializers.ModelSerializer):
         if not request:
             raise serializers.ValidationError("No se pudo obtener el usuario de la solicitud.")
 
-        tienda_id = request.session.get("tienda_id")  # Obtener la tienda activa de la sesión
+        tienda_id = self._resolve_tienda_id()
         if not tienda_id:
             raise serializers.ValidationError("No hay una tienda activa seleccionada.")
 
@@ -200,17 +209,28 @@ class GastoSerializer(serializers.ModelSerializer):
 
 
 class CajaSerializer(serializers.ModelSerializer):
+    tienda_id = serializers.IntegerField(write_only=True, required=False)
+
     class Meta:
         model = Caja
-        fields = ['id', 'usuario', 'turno', 'saldo_inicial', 'saldo_final', 'fecha_apertura', 'fecha_cierre', 'estado']
+        fields = ['id', 'usuario', 'tienda_id', 'turno', 'saldo_inicial', 'saldo_final', 'fecha_apertura', 'fecha_cierre', 'estado']
         read_only_fields = ['id', 'usuario', 'fecha_apertura', 'fecha_cierre', 'estado']
+
+    def _resolve_tienda_id(self):
+        request = self.context.get('request')
+        if not request:
+            return None
+        return (
+            request.data.get('tienda_id')
+            or request.data.get('tienda')
+            or request.session.get('tienda_id')
+        )
 
     def validate(self, data):
         """
         Validar que no haya otra caja abierta en la tienda activa.
         """
-        request = self.context.get('request')
-        tienda_id = request.session.get("tienda_id")
+        tienda_id = self._resolve_tienda_id()
         
         if not tienda_id:
             raise serializers.ValidationError("No hay una tienda activa seleccionada.")
@@ -226,12 +246,13 @@ class CajaSerializer(serializers.ModelSerializer):
         Asigna la tienda activa y el usuario autenticado al crear la caja.
         """
         request = self.context.get('request')
-        tienda_id = request.session.get("tienda_id")
+        tienda_id = self._resolve_tienda_id()
         
         if not tienda_id:
             raise serializers.ValidationError("No hay una tienda activa seleccionada.")
         
-        validated_data['tienda_id'] = tienda_id
-        validated_data['usuario'] = request.user
+        validated_data['tienda'] = get_object_or_404(Tienda, id=tienda_id)
+        if request and hasattr(request, 'user'):
+            validated_data['usuario'] = request.user
         
         return super().create(validated_data)
