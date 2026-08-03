@@ -19,6 +19,16 @@ class UsuarioSerializer(serializers.ModelSerializer):
 class VendedorRegisterSerializer(RegisterSerializer):
     """Registro publico: siempre crea usuarios con rol vendedor."""
 
+    def validate_email(self, email):
+        email = (email or '').strip().lower()
+        if not email:
+            raise serializers.ValidationError("El correo es obligatorio.")
+
+        if Usuario.objects.filter(email__iexact=email).exists():
+            raise serializers.ValidationError("Ya existe una cuenta con este correo.")
+
+        return email
+
     def custom_signup(self, request, user):
         user.rol = Usuario.Rol.VENDEDOR
         user.is_staff = False
@@ -52,6 +62,10 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
                     request=request,
                     username=usuarios.first().username,
                     password=password,
+                )
+            elif usuarios.count() > 1:
+                raise serializers.ValidationError(
+                    "Hay múltiples cuentas con ese correo. Inicie sesión con usuario."
                 )
 
         if user is None:

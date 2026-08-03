@@ -66,7 +66,11 @@ INSTALLED_APPS = [
     'core.apps.CoreConfig',
 ]
 
-SITE_ID = 2
+SITE_ID = env.int('SITE_ID', default=1)
+
+# Ajustes compatibles con allauth reciente para evitar dependencias de settings deprecados.
+ACCOUNT_SIGNUP_FIELDS = ['username*', 'email*', 'password1*', 'password2*']
+ACCOUNT_UNIQUE_EMAIL = True
 
 # --- BASE DE DATOS ---
 # Selección de motor de base de datos basada en la variable de entorno USE_NEON.
